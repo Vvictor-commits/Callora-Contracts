@@ -108,6 +108,112 @@ fn init_usdc_token_is_admin_panics() {
     client.init(&admin, &admin);
 }
 
+// ---------------------------------------------------------------------------
+// Required named test cases (CI/CD spec)
+// ---------------------------------------------------------------------------
+
+/// Verifies balance changes for both contract and recipient after a successful distribute call.
+#[test]
+fn test_distribute_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (pool_addr, client) = create_pool(&env);
+    let (usdc_address, usdc_client, usdc_admin) = create_usdc(&env, &admin);
+
+    client.init(&admin, &usdc_address);
+    fund_pool(&usdc_admin, &pool_addr, 1_000);
+
+    client.distribute(&admin, &recipient, &350);
+
+    // Contract balance reduced
+    assert_eq!(usdc_client.balance(&pool_addr), 650);
+    // Recipient received the funds
+    assert_eq!(usdc_client.balance(&recipient), 350);
+
+    // Verify distribute event was emitted
+    let events = env.events().all();
+    let distribute_event = events.iter().find(|(_, topics, _)| {
+        !topics.is_empty() && {
+            let name: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+            name == Symbol::new(&env, "distribute")
+        }
+    });
+    assert!(distribute_event.is_some(), "expected distribute event");
+    let (_, topics, data) = distribute_event.unwrap();
+    let to_addr: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    let emitted_amount: i128 = i128::try_from_val(&env, &data).unwrap();
+    assert_eq!(to_addr, recipient);
+    assert_eq!(emitted_amount, 350);
+}
+
+/// Ensures a non-admin call to distribute panics with the expected message.
+#[test]
+fn test_distribute_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (pool_addr, client) = create_pool(&env);
+    let (usdc_address, _, usdc_admin) = create_usdc(&env, &admin);
+
+    client.init(&admin, &usdc_address);
+    fund_pool(&usdc_admin, &pool_addr, 500);
+
+    let result = client.try_distribute(&non_admin, &recipient, &100);
+    assert!(result.is_err(), "expected error for non-admin distribute");
+}
+
+/// Verifies the "Insufficient contract balance" panic when the contract holds less than requested.
+#[test]
+fn test_distribute_insufficient_funds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (pool_addr, client) = create_pool(&env);
+    let (usdc_address, _, usdc_admin) = create_usdc(&env, &admin);
+
+    client.init(&admin, &usdc_address);
+    fund_pool(&usdc_admin, &pool_addr, 50);
+
+    let result = client.try_distribute(&admin, &recipient, &51);
+    assert!(result.is_err(), "expected error for insufficient balance");
+}
+
+/// Verifies distribute emits the correct event structure.
+#[test]
+fn distribute_emits_correct_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let (pool_addr, client) = create_pool(&env);
+    let (usdc_address, _, usdc_admin) = create_usdc(&env, &admin);
+
+    client.init(&admin, &usdc_address);
+    fund_pool(&usdc_admin, &pool_addr, 500);
+    client.distribute(&admin, &recipient, &200);
+
+    let events = env.events().all();
+    let ev = events.iter().find(|(_, topics, _)| {
+        !topics.is_empty() && {
+            let name: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+            name == Symbol::new(&env, "distribute")
+        }
+    });
+    assert!(ev.is_some(), "distribute event not found");
+    let (_, topics, data) = ev.unwrap();
+    // topic 0: Symbol("distribute"), topic 1: to Address
+    assert_eq!(topics.len(), 2);
+    let to_addr: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(to_addr, recipient);
+    let amount: i128 = i128::try_from_val(&env, &data).unwrap();
+    assert_eq!(amount, 200);
+}
+
 #[test]
 fn distribute_success() {
     let env = Env::default();

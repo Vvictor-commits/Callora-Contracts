@@ -65,17 +65,26 @@ pub struct VaultMeta {
     pub min_deposit: i128,
 }
 
+/// Unified storage key enum for all vault contract state.
+///
+/// All instance storage access MUST go through this enum to prevent key collisions
+/// and ensure type-safe, auditable storage access patterns.
 #[contracttype]
-pub enum StorageKey {
+pub enum DataKey {
+    /// Stores the primary vault metadata (`VaultMeta`): owner, balance, authorized_caller, min_deposit.
     Meta,
-    /// Allowed depositors list: Vec<Address> with stable ordering.
-    /// Unlike Maps, Vec maintains insertion order, making iteration predictable and stable.
-    /// Used to store addresses allowed to deposit funds on behalf of the vault owner.
+    /// Stores the list of allowed depositor addresses (`Vec<Address>`).
+    /// Vec maintains stable insertion order. Present only when at least one depositor is set.
     AllowedDepositors,
+    /// Stores the global admin `Address` (set to owner at init; transferable via `set_admin`).
     Admin,
+    /// Stores the USDC token contract `Address` used for all token transfers.
     UsdcToken,
+    /// Stores the optional settlement contract `Address`. When set, deduct transfers USDC here.
     Settlement,
+    /// Stores the optional revenue pool `Address`. Used as fallback when no settlement is set.
     RevenuePool,
+    /// Stores the maximum single-deduct cap (`i128`). Defaults to `i128::MAX` (no cap).
     MaxDeduct,
     Paused,
     Metadata(String),
@@ -116,7 +125,7 @@ impl CalloraVault {
     /// * `owner`           – Vault owner; must authorize this call. Always permitted to deposit.
     /// * `usdc_token`      – Address of the USDC token contract.
     /// * `initial_balance` – Optional initial tracked balance (USDC must already be in the contract).
-    /// * `min_deposit`     – Optional minimum per-deposit amount (default `0`).
+    /// * `min_default `0`).
     /// * `revenue_pool`    – Optional address to receive USDC on each deduct. If `None`, USDC stays in vault.
     /// * `max_deduct`      – Optional cap per single deduct; if `None`, uses `DEFAULT_MAX_DEDUCT` (no cap).
     ///
@@ -139,7 +148,7 @@ impl CalloraVault {
     ) -> VaultMeta {
         owner.require_auth();
         let inst = env.storage().instance();
-        if inst.has(&StorageKey::Meta) {
+        if inst.has(&DataKey::Meta) {
             panic!("vault already initialized");
         }
 
@@ -175,13 +184,13 @@ impl CalloraVault {
             min_deposit: min_deposit_val,
         };
 
-        inst.set(&StorageKey::Meta, &meta);
-        inst.set(&StorageKey::UsdcToken, &usdc_token);
-        inst.set(&StorageKey::Admin, &owner);
+        inst.set(&DataKey::Meta, &meta);
+        inst.set(&DataKey::UsdcToken, &usdc_token);
+        insttaKey::Admin, &owner);
         if let Some(pool) = revenue_pool {
-            inst.set(&StorageKey::RevenuePool, &pool);
+            inst.set(&DataKey::RevenuePool, &pool);
         }
-        inst.set(&StorageKey::MaxDeduct, &max_deduct_val);
+        inst.set(&DataKey::MaxDeduct, &max_deduct_val);
 
         env.events()
             .publish((Symbol::new(&env, "init"), owner.clone()), balance);
@@ -198,7 +207,7 @@ impl CalloraVault {
         let allowed: Vec<Address> = env
             .storage()
             .instance()
-            .get(&StorageKey::AllowedDepositors)
+            .get(&DataKey::AllowedDepositors)
             .unwrap_or(Vec::new(&env));
         allowed.contains(&caller)
     }
@@ -210,7 +219,7 @@ impl CalloraVault {
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
-            .get(&StorageKey::Admin)
+            .get(&DataKey::Admin)
             .expect("vault not initialized")
     }
 
@@ -290,7 +299,7 @@ impl CalloraVault {
         let usdc_address: Address = env
             .storage()
             .instance()
-            .get(&StorageKey::UsdcToken)
+            .get(&DataKey::UsdcToken)
             .expect("vault not initialized");
         let usdc = token::Client::new(&env, &usdc_address);
         let vault_balance = usdc.balance(&env.current_contract_address());
@@ -299,7 +308,7 @@ impl CalloraVault {
         }
         usdc.transfer(&env.current_contract_address(), &to, &amount);
         env.events()
-            .publish((Symbol::new(&env, "distribute"), to), amount);
+            .publish(), amount);
     }
 
     /// Get vault metadata (owner, balance, and min_deposit).
@@ -309,7 +318,7 @@ impl CalloraVault {
     pub fn get_meta(env: Env) -> VaultMeta {
         env.storage()
             .instance()
-            .get(&StorageKey::Meta)
+            .get(&DataKey::Meta)
             .unwrap_or_else(|| panic!("vault not initialized"))
     }
 
@@ -375,10 +384,10 @@ impl CalloraVault {
         meta.owner.require_auth();
 
         meta.authorized_caller = Some(caller.clone());
-        env.storage().instance().set(&StorageKey::Meta, &meta);
+        env.storage().instance().set(&DataKey::Meta, &meta);
 
         env.events().publish(
-            (Symbol::new(&env, "set_auth_caller"), meta.owner.clone()),
+            (Symbol::new(&env,caller"), meta.owner.clone()),
             caller,
         );
     }
@@ -460,7 +469,7 @@ impl CalloraVault {
         let usdc_address: Address = env
             .storage()
             .instance()
-            .get(&StorageKey::UsdcToken)
+            .get(&DataKey::UsdcToken)
             .expect("vault not initialized");
         let usdc = token::Client::new(&env, &usdc_address);
         usdc.transfer(&caller, &env.current_contract_address(), &amount);
@@ -516,7 +525,7 @@ impl CalloraVault {
     pub fn get_max_deduct(env: Env) -> i128 {
         env.storage()
             .instance()
-            .get(&StorageKey::MaxDeduct)
+            .get(&DataKey::MaxDeduct)
             .unwrap_or(DEFAULT_MAX_DEDUCT)
     }
 
@@ -627,8 +636,8 @@ impl CalloraVault {
 
         // ── Phase 4: external transfer ───────────────────────────────────────
         let inst = env.storage().instance();
-        if let Some(settlement) = inst.get::<StorageKey, Address>(&StorageKey::Settlement) {
-            let usdc_token: Address = inst.get(&StorageKey::UsdcToken).unwrap();
+        if let Some(settlement) = inst.get::<DataKey, Address>(&DataKey::Settlement) {
+            let usdc_token: Address = inst.get(&DataKey::UsdcToken).unwrap();
             Self::transfer_funds(&env, &usdc_token, &settlement, total_amount);
         } else if let Some(revenue_pool) = inst.get::<StorageKey, Address>(&StorageKey::RevenuePool)
         {
@@ -697,7 +706,7 @@ impl CalloraVault {
 
     /// Withdraws USDC from the vault to the owner.
     /// Can only be called by the Owner.
-    pub fn withdraw(env: Env, amount: i128) -> i128 {
+    pub fn withdraw(env
         let mut meta = Self::get_meta(env.clone());
         meta.owner.require_auth();
         assert!(amount > 0, "amount must be positive");
@@ -705,7 +714,7 @@ impl CalloraVault {
         let usdc_address: Address = env
             .storage()
             .instance()
-            .get(&StorageKey::UsdcToken)
+            .get(&DataKey::UsdcToken)
             .expect("vault not initialized");
         let usdc = token::Client::new(&env, &usdc_address);
         usdc.transfer(&env.current_contract_address(), &meta.owner, &amount);
@@ -729,7 +738,7 @@ impl CalloraVault {
         let usdc_address: Address = env
             .storage()
             .instance()
-            .get(&StorageKey::UsdcToken)
+            .get(&DataKey::UsdcToken)
             .expect("vault not initialized");
         let usdc = token::Client::new(&env, &usdc_address);
         usdc.transfer(&env.current_contract_address(), &to, &amount);
@@ -804,17 +813,17 @@ impl CalloraVault {
         }
         env.storage()
             .instance()
-            .set(&StorageKey::Settlement, &settlement_address);
+            .set(&DataKey::Settlement, &settlement_address);
     }
 
     /// Get the settlement contract address.
     ///
     /// # Panics
-    /// * `"settlement address not set"` – if no settlement address has been configured.
+ has been configured.
     pub fn get_settlement(env: Env) -> Address {
         env.storage()
             .instance()
-            .get(&StorageKey::Settlement)
+            .get(&DataKey::Settlement)
             .unwrap_or_else(|| panic!("settlement address not set"))
     }
 
@@ -845,7 +854,7 @@ impl CalloraVault {
 
         env.storage()
             .instance()
-            .set(&StorageKey::Metadata(offering_id.clone()), &metadata);
+            .set(&DataKey::Metadata(offering_id.clone()), &metadata);
         env.events().publish(
             (Symbol::new(&env, "metadata_set"), offering_id, caller),
             metadata.clone(),
@@ -857,7 +866,7 @@ impl CalloraVault {
     pub fn get_metadata(env: Env, offering_id: String) -> Option<String> {
         env.storage()
             .instance()
-            .get(&StorageKey::Metadata(offering_id))
+            .get(&DataKey::Metadata(offering_id))
     }
 
     /// Update existing offering metadata. Owner-only.
@@ -888,11 +897,11 @@ impl CalloraVault {
         let old: String = env
             .storage()
             .instance()
-            .get(&StorageKey::Metadata(offering_id.clone()))
+            .get(&DataKey::Metadata(offering_id.clone()))
             .unwrap_or(String::from_str(&env, ""));
         env.storage()
             .instance()
-            .set(&StorageKey::Metadata(offering_id.clone()), &metadata);
+ta);
         env.events().publish(
             (Symbol::new(&env, "metadata_updated"), offering_id, caller),
             (old, metadata.clone()),
